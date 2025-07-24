@@ -1,6 +1,6 @@
 export function openDatabase() {
     return new Promise<IDBDatabase>((resolve, reject) => {
-        const request = window.indexedDB.open('wechat-article-exporter', 3)
+        const request = window.indexedDB.open('wechat-article-exporter', 4)
         request.onerror = (evt) => {
             reject(evt)
         }
@@ -18,10 +18,12 @@ export function openDatabase() {
                 const articleStore = db.createObjectStore('article')
                 articleStore.createIndex('fakeid', 'fakeid')
                 articleStore.createIndex('fakeid_create_time', ['fakeid', 'create_time'])
-            }
-            const articleStore = transaction.objectStore('article')
-            if (articleStore.indexNames.contains('create_time')) {
-                articleStore.deleteIndex('create_time')
+            } else {
+                // 如果 article store 已存在，检查是否需要删除旧索引
+                const articleStore = transaction.objectStore('article')
+                if (articleStore.indexNames.contains('create_time')) {
+                    articleStore.deleteIndex('create_time')
+                }
             }
 
             if (!db.objectStoreNames.contains('asset')) {
@@ -44,6 +46,13 @@ export function openDatabase() {
             // 创建v3版本相关的数据库
             if (!db.objectStoreNames.contains('proxy')) {
                 db.createObjectStore('proxy', {keyPath: 'address'})
+            }
+
+            // 创建v4版本相关的数据库
+            if (!db.objectStoreNames.contains('follows')) {
+                const followsStore = db.createObjectStore('follows', {keyPath: 'fakeid'})
+                followsStore.createIndex('nickname', 'nickname')
+                followsStore.createIndex('createdAt', 'createdAt')
             }
         }
     })

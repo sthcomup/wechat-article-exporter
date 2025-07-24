@@ -5,12 +5,21 @@
       <div class="p-4 border-b border-gray-200">
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-lg font-semibold">关注列表</h2>
-          <button
-            @click="showAddModal = true"
-            class="px-3 py-1 bg-blue-500 text-white rounded-md hover:bg-blue-600 text-sm"
-          >
-            添加关注
-          </button>
+          <div class="flex space-x-2">
+            <button
+              @click="downloadFollows"
+              class="px-2 py-1 bg-green-500 text-white rounded text-xs hover:bg-green-600"
+              title="导出关注列表"
+            >
+              导出
+            </button>
+            <button
+              @click="showAddModal = true"
+              class="px-3 py-1 bg-blue-500 text-white rounded-md hover:bg-blue-600 text-sm"
+            >
+              添加关注
+            </button>
+          </div>
         </div>
         
         <!-- 搜索框 -->
@@ -105,6 +114,18 @@
               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
+          
+          <div class="border-t pt-4">
+            <label class="block text-sm font-medium text-gray-700 mb-1">或导入关注列表</label>
+            <input
+              ref="fileInput"
+              type="file"
+              accept=".json"
+              @change="handleFileImport"
+              class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <p class="text-xs text-gray-500 mt-1">选择之前导出的JSON文件</p>
+          </div>
           <div class="flex justify-end space-x-2">
             <button
               @click="showAddModal = false"
@@ -132,6 +153,7 @@ import type ArticleList from "~/components/ArticleList.vue";
 import type {AccountInfo, AuthorInfo} from "~/types/types";
 import {getAccountList} from "~/apis";
 import {ACCOUNT_TYPE} from "~/config";
+import useFollows, {type FollowEntry} from "~/composables/useFollows";
 
 definePageMeta({
   layout: false
@@ -151,31 +173,22 @@ const showAddModal = ref(false)
 const newFollowInput = ref('')
 const addingFollow = ref(false)
 
-// 关注列表 - 使用localStorage存储
-const follows = ref<(AccountInfo | AuthorInfo)[]>([])
-
-// 从localStorage加载关注列表
-const loadFollows = () => {
-  const stored = localStorage.getItem('follows')
-  if (stored) {
-    follows.value = JSON.parse(stored)
-  }
-}
-
-// 保存关注列表到localStorage
-const saveFollows = () => {
-  localStorage.setItem('follows', JSON.stringify(follows.value))
-}
-
-// 初始化加载关注列表
-onMounted(() => {
-  loadFollows()
-})
+// 使用关注列表组合式函数
+const { 
+  follows, 
+  addFollow: addFollowToList, 
+  removeFollow: removeFollowFromList, 
+  isFollowed, 
+  searchFollows, 
+  downloadFollows,
+  exportFollows,
+  importFollows
+} = useFollows()
 
 // 计算属性 - 过滤后的关注列表
 const filteredFollows = computed(() => {
   if (!searchQuery.value) return follows.value
-  return follows.value.filter((follow: AccountInfo | AuthorInfo) => 
+  return follows.value.filter((follow: FollowEntry) => 
     follow.nickname.toLowerCase().includes(searchQuery.value.toLowerCase()) ||
     (follow.type === 'account' && follow.alias?.toLowerCase().includes(searchQuery.value.toLowerCase())) ||
     follow.fakeid.toLowerCase().includes(searchQuery.value.toLowerCase())
@@ -197,23 +210,67 @@ function searchArticle(query: string) {
 }
 
 // 关注功能方法
-const selectFollow = (follow: AccountInfo | AuthorInfo) => {
-  activeAccount.value = follow
+const selectFollow = (follow: FollowEntry) => {
+  // 转换为 AccountInfo 或 AuthorInfo 类型
+  const accountInfo: AccountInfo | AuthorInfo = follow.type === 'account' 
+    ? {
+        type: 'account',
+        fakeid: follow.fakeid,
+        nickname: follow.nickname,
+        alias: follow.alias || '',
+        round_head_img: follow.round_head_img || '',
+        service_type: follow.service_type || 0,
+        signature: follow.signature || '',
+        _loaded: follow._loaded
+      }
+    : {
+        type: 'author',
+        fakeid: follow.fakeid,
+        nickname: follow.nickname
+      }
+  
+  activeAccount.value = accountInfo
   nextTick(() => {
     selectAccount()
   })
 }
 
-const removeFollow = (follow: AccountInfo | AuthorInfo) => {
+const removeFollow = (follow: FollowEntry) => {
   if (confirm(`确定要取消关注"${follow.nickname}"吗？`)) {
-    follows.value = follows.value.filter((f: AccountInfo | AuthorInfo) => f.fakeid !== follow.fakeid)
-    saveFollows()
+    removeFollowFromList(follow.fakeid)
     
     // 如果取消关注的是当前选中的公众号，清空选中状态
     if (activeAccount.value?.fakeid === follow.fakeid) {
       activeAccount.value = null
     }
   }
+}
+
+// 文件导入处理
+const fileInput = ref<HTMLInputElement>()
+
+const handleFileImport = (event: Event) => {
+  const file = (event.target as HTMLInputElement).files?.[0]
+  if (!file) return
+
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    try {
+      const content = e.target?.result as string
+      importFollows(content)
+      alert(`成功导入 ${follows.value.length} 个关注`)
+      showAddModal.value = false
+      
+      // 清空文件输入
+      if (fileInput.value) {
+        fileInput.value.value = ''
+      }
+    } catch (error) {
+      console.error('导入失败:', error)
+      alert('导入失败：' + (error as Error).message)
+    }
+  }
+  reader.readAsText(file)
 }
 
 const addFollow = async () => {
@@ -234,14 +291,13 @@ const addFollow = async () => {
     const account = accounts[0]
     
     // 检查是否已经关注
-    if (follows.value.some((f: AccountInfo | AuthorInfo) => f.fakeid === account.fakeid)) {
+    if (await isFollowed(account.fakeid)) {
       alert('该公众号已在关注列表中')
       return
     }
     
     // 添加到关注列表
-    follows.value.unshift(account)
-    saveFollows()
+    await addFollowToList(account)
     
     // 清空输入框并关闭弹窗
     newFollowInput.value = ''
